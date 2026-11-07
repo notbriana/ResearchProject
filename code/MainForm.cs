@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -10,6 +11,10 @@ namespace SalternPID
         private PidSettings _settings;
         private IController _controller;
         private int _step = 0;
+
+        // the test situation (null = free mode, we move the sliders by hand)
+        private List<Scenario> _scenarios;
+        private Scenario _scenario = null;
 
         private TankView _tankView;
         private ChartView _chartView;
@@ -23,6 +28,8 @@ namespace SalternPID
         private TrackBar _valveBar;
         private TrackBar _nullBar;
         private TrackBar _disturbanceBar;
+        private ComboBox _scenarioBox;
+        private Control[] _scenarioDrivenControls;
 
         // the controller side
         private CheckBox _controllerCheck;
@@ -51,6 +58,7 @@ namespace SalternPID
             _settings = new PidSettings();
             _controller = new ExtendedPid(_settings);
             _tank = new TankSimulator(1);
+            _scenarios = Scenarios.CreateAll();
 
             BuildInterface();
 
@@ -113,6 +121,26 @@ namespace SalternPID
         {
             AddTitle(column, "Process (the tank)");
 
+            // the test situations S1 to S6
+            FlowLayoutPanel situationRow = new FlowLayoutPanel();
+            situationRow.AutoSize = true;
+            Label situationLabel = new Label();
+            situationLabel.Text = "Situation:";
+            situationLabel.AutoSize = true;
+            situationLabel.Margin = new Padding(3, 6, 3, 0);
+            situationRow.Controls.Add(situationLabel);
+
+            _scenarioBox = new ComboBox();
+            _scenarioBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            _scenarioBox.Items.Add("Free (we move the sliders by hand)");
+            foreach (Scenario scenario in _scenarios)
+                _scenarioBox.Items.Add(scenario.Name + ": " + scenario.Description);
+            _scenarioBox.Width = 340;
+            _scenarioBox.SelectedIndex = 0;
+            _scenarioBox.SelectedIndexChanged += ScenarioBox_Changed;
+            situationRow.Controls.Add(_scenarioBox);
+            column.Controls.Add(situationRow);
+
             FlowLayoutPanel buttons = new FlowLayoutPanel();
             buttons.AutoSize = true;
             buttons.Controls.Add(MakeButton("Start", StartButton_Click));
@@ -130,6 +158,9 @@ namespace SalternPID
             _valveBar = AddTrackBar(column, "Valve u", 0, 100, 50);
             _nullBar = AddTrackBar(column, "Null position u0", 0, 100, 50);
             _disturbanceBar = AddTrackBar(column, "Disturbance d (rain +, evaporation -)", -5, 5, 0);
+
+            // when a situation is chosen, it moves these controls, not us
+            _scenarioDrivenControls = new Control[] { _setPointBar, _nullBar, _disturbanceBar, _noiseBox };
         }
 
         private void BuildControllerColumn(FlowLayoutPanel column)
@@ -175,7 +206,7 @@ namespace SalternPID
             _nonlinearICheck = AddCheckBox(column, "Nonlinear function fi (integral)", _settings.UseNonlinearI, SettingsChanged);
 
             Label weights = new Label();
-            weights.Text = "Weights (experiment E7):";
+            weights.Text = "Weights:";
             weights.AutoSize = true;
             weights.Margin = new Padding(3, 10, 3, 0);
             column.Controls.Add(weights);
@@ -293,13 +324,53 @@ namespace SalternPID
 
         private void ResetButton_Click(object sender, EventArgs e)
         {
+            DoReset();
+        }
+
+        // starts again: the tank, the controller, the chart and the step counter
+        private void DoReset()
+        {
             _timer.Stop();
             _tank.Reset((int)_seedBox.Value);
             _controller = MakeController(_controllerBox.SelectedIndex);
-            CopySettingsToTank();
             _step = 0;
             _chartView.Clear();
+            ApplyScenario();
+            CopySettingsToTank();
             UpdateScreen();
+        }
+
+        // a situation was chosen (or the free mode)
+        private void ScenarioBox_Changed(object sender, EventArgs e)
+        {
+            int index = _scenarioBox.SelectedIndex;
+            if (index <= 0)
+                _scenario = null;
+            else
+                _scenario = _scenarios[index - 1];
+
+            // in a situation, the sliders are moved by the situation, so we cannot move them
+            foreach (Control control in _scenarioDrivenControls)
+                control.Enabled = (_scenario == null);
+
+            DoReset();
+        }
+
+        // the situation sets the set point, u0, the disturbance and the noise for the current step
+        private void ApplyScenario()
+        {
+            if (_scenario == null) return;
+
+            SetBar(_setPointBar, (int)_scenario.SetPoint(_step));
+            SetBar(_nullBar, (int)_scenario.NullPosition(_step));
+            SetBar(_disturbanceBar, (int)_scenario.Disturbance(_step));
+            _noiseBox.Value = (decimal)_scenario.NoiseSigma;
+        }
+
+        private void SetBar(TrackBar bar, int value)
+        {
+            if (bar.Value != value)
+                bar.Value = value;
         }
 
         // makes the controller that is chosen in the list
@@ -321,7 +392,11 @@ namespace SalternPID
             foreach (Control control in _ourOnlyControls)
                 control.Enabled = isOurs;
 
-            UpdateScreen();
+            // in a situation, a new controller means a new run
+            if (_scenario != null)
+                DoReset();
+            else
+                UpdateScreen();
         }
 
         // the switches and the weights go to the settings of the controller
@@ -349,7 +424,16 @@ namespace SalternPID
 
         private void Timer_Tick(object sender, EventArgs e)
         {
-            // the unknown things of the process
+            // a situation has a fixed number of steps
+            if (_scenario != null && _step >= _scenario.Steps)
+            {
+                _timer.Stop();
+                UpdateScreen();
+                return;
+            }
+
+            // the situation sets the unknown things (or the sliders, in the free mode)
+            ApplyScenario();
             CopySettingsToTank();
 
             // what the sensor reads (with noise)
@@ -366,7 +450,7 @@ namespace SalternPID
                 _tank.MoveValve(_valveBar.Value);
             }
 
-            // the process makes one step
+            // the process makes one step 
             if (_processCheck.Checked)
                 _tank.Step();
 
@@ -389,7 +473,8 @@ namespace SalternPID
                 "Error e = PV - SP: " + error.ToString("F2") + Environment.NewLine +
                 "Valve u: " + _tank.Valve.ToString("F1") + Environment.NewLine +
                 "Null position u0: " + _tank.NullPosition.ToString("F0") + Environment.NewLine +
-                "Controller: " + _controller.Name;
+                "Controller: " + _controller.Name + Environment.NewLine +
+                "Situation: " + SituationText();
 
             // the inside numbers are only for our controller
             ExtendedPid ours = _controller as ExtendedPid;
@@ -404,6 +489,16 @@ namespace SalternPID
             }
 
             _infoLabel.Text = text;
+        }
+
+        private string SituationText()
+        {
+            if (_scenario == null) return "free";
+
+            if (_step >= _scenario.Steps)
+                return _scenario.Name + " finished (" + _scenario.Steps + " steps)";
+
+            return _scenario.Name + " (step " + _step + " of " + _scenario.Steps + ")";
         }
     }
 }
