@@ -8,7 +8,7 @@ namespace SalternPID
     {
         private TankSimulator _tank;
         private PidSettings _settings;
-        private ExtendedPid _controller;
+        private IController _controller;
         private int _step = 0;
 
         private TankView _tankView;
@@ -36,6 +36,8 @@ namespace SalternPID
         private NumericUpDown _kpBox;
         private NumericUpDown _kiBox;
         private NumericUpDown _kdBox;
+        private ComboBox _controllerBox;
+        private Control[] _ourOnlyControls;
         private Label _infoLabel;
 
         public MainForm()
@@ -62,7 +64,7 @@ namespace SalternPID
 
         private void BuildInterface()
         {
-            // first we add the panel on the right, then the tank on the left after it
+            // the panel on the right is added first, the tank on the left after it
             Panel rightPanel = new Panel();
             rightPanel.Dock = DockStyle.Fill;
             Controls.Add(rightPanel);
@@ -134,6 +136,28 @@ namespace SalternPID
         {
             AddTitle(column, "Controller");
 
+            // which controller: ours or one of the normal ones for the comparison
+            FlowLayoutPanel chooseRow = new FlowLayoutPanel();
+            chooseRow.AutoSize = true;
+            Label chooseLabel = new Label();
+            chooseLabel.Text = "Controller:";
+            chooseLabel.AutoSize = true;
+            chooseLabel.Margin = new Padding(3, 6, 3, 0);
+            chooseRow.Controls.Add(chooseLabel);
+
+            _controllerBox = new ComboBox();
+            _controllerBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            _controllerBox.Items.Add("Extended PID (ours)");
+            _controllerBox.Items.Add("P");
+            _controllerBox.Items.Add("PI");
+            _controllerBox.Items.Add("PID");
+            _controllerBox.Items.Add("PID+ (filtered derivative, anti-windup)");
+            _controllerBox.Width = 280;
+            _controllerBox.SelectedIndex = 0;
+            _controllerBox.SelectedIndexChanged += ControllerBox_Changed;
+            chooseRow.Controls.Add(_controllerBox);
+            column.Controls.Add(chooseRow);
+
             _controllerCheck = AddCheckBox(column, "Controller runs", true, null);
 
             Label parts = new Label();
@@ -151,7 +175,7 @@ namespace SalternPID
             _nonlinearICheck = AddCheckBox(column, "Nonlinear function fi (integral)", _settings.UseNonlinearI, SettingsChanged);
 
             Label weights = new Label();
-            weights.Text = "Weights:";
+            weights.Text = "Weights (experiment E7):";
             weights.AutoSize = true;
             weights.Margin = new Padding(3, 10, 3, 0);
             column.Controls.Add(weights);
@@ -162,6 +186,13 @@ namespace SalternPID
             _kpBox.ValueChanged += SettingsChanged;
             _kiBox.ValueChanged += SettingsChanged;
             _kdBox.ValueChanged += SettingsChanged;
+
+            // the switches and the weights are only for our controller
+            _ourOnlyControls = new Control[]
+            {
+                _secondDerivativeCheck, _smoothingCheck, _deadBandCheck, _resetCheck,
+                _cancelCheck, _nonlinearPCheck, _nonlinearICheck, _kpBox, _kiBox, _kdBox
+            };
 
             _infoLabel = new Label();
             _infoLabel.Font = new Font("Consolas", 10);
@@ -264,10 +295,32 @@ namespace SalternPID
         {
             _timer.Stop();
             _tank.Reset((int)_seedBox.Value);
-            _controller = new ExtendedPid(_settings);
+            _controller = MakeController(_controllerBox.SelectedIndex);
             CopySettingsToTank();
             _step = 0;
             _chartView.Clear();
+            UpdateScreen();
+        }
+
+        // makes the controller that is chosen in the list
+        private IController MakeController(int index)
+        {
+            if (index == 1) return BasicPid.CreateP();
+            if (index == 2) return BasicPid.CreatePI();
+            if (index == 3) return BasicPid.CreatePID();
+            if (index == 4) return BasicPid.CreatePIDPlus();
+            return new ExtendedPid(_settings);
+        }
+
+        private void ControllerBox_Changed(object sender, EventArgs e)
+        {
+            _controller = MakeController(_controllerBox.SelectedIndex);
+
+            // the switches and the weights work only for our controller
+            bool isOurs = (_controllerBox.SelectedIndex == 0);
+            foreach (Control control in _ourOnlyControls)
+                control.Enabled = isOurs;
+
             UpdateScreen();
         }
 
@@ -299,7 +352,7 @@ namespace SalternPID
             // the unknown things of the process
             CopySettingsToTank();
 
-            // what the sensor reads
+            // what the sensor reads (with noise)
             double measured = _tank.ReadLevel();
 
             // the valve: the controller decides, or the valve is moved by hand
@@ -330,17 +383,27 @@ namespace SalternPID
 
             double error = _tank.Level - _setPointBar.Value;
 
-            _infoLabel.Text =
+            string text =
                 "Step: " + _step + Environment.NewLine +
                 "Level PV: " + _tank.Level.ToString("F2") + Environment.NewLine +
                 "Error e = PV - SP: " + error.ToString("F2") + Environment.NewLine +
                 "Valve u: " + _tank.Valve.ToString("F1") + Environment.NewLine +
                 "Null position u0: " + _tank.NullPosition.ToString("F0") + Environment.NewLine +
-                "Smooth error es: " + _controller.SmoothError.ToString("F2") + Environment.NewLine +
-                "Rate d1s: " + _controller.Rate.ToString("F2") + Environment.NewLine +
-                "Acceleration d2s: " + _controller.Acceleration.ToString("F2") + Environment.NewLine +
-                "Integral S: " + _controller.Sum.ToString("F1") + Environment.NewLine +
-                "Derivative cancels: " + _controller.CancelCount;
+                "Controller: " + _controller.Name;
+
+            // the inside numbers are only for our controller
+            ExtendedPid ours = _controller as ExtendedPid;
+            if (ours != null)
+            {
+                text = text + Environment.NewLine +
+                    "Smooth error es: " + ours.SmoothError.ToString("F2") + Environment.NewLine +
+                    "Rate d1s: " + ours.Rate.ToString("F2") + Environment.NewLine +
+                    "Acceleration d2s: " + ours.Acceleration.ToString("F2") + Environment.NewLine +
+                    "Integral S: " + ours.Sum.ToString("F1") + Environment.NewLine +
+                    "Derivative cancels: " + ours.CancelCount;
+            }
+
+            _infoLabel.Text = text;
         }
     }
 }
