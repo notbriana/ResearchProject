@@ -88,7 +88,7 @@ namespace SalternPID
             _tankView.Width = 300;
             Controls.Add(_tankView);
 
-            // two columns of controls, and the chart on top
+            // in the right panel: two columns of controls, and the chart on top
             TableLayoutPanel table = new TableLayoutPanel();
             table.Dock = DockStyle.Fill;
             table.ColumnCount = 2;
@@ -154,6 +154,11 @@ namespace SalternPID
             buttons.Controls.Add(MakeButton("Reset", ResetButton_Click));
             buttons.Controls.Add(MakeButton("Save CSV", SaveButton_Click));
             column.Controls.Add(buttons);
+
+            // the second window with the experiments E1, E6 and E7
+            Button experimentsButton = MakeButton("Experiments (E1, E6, E7)", ExperimentsButton_Click);
+            experimentsButton.Width = 220;
+            column.Controls.Add(experimentsButton);
 
             // with this box we stop only the process, the controller goes on
             _processCheck = AddCheckBox(column, "Process runs", true, null);
@@ -341,7 +346,13 @@ namespace SalternPID
             DoReset();
         }
 
-        // the tank, the controller, the chart and the step counter
+        private void ExperimentsButton_Click(object sender, EventArgs e)
+        {
+            ExperimentsForm form = new ExperimentsForm();
+            form.Show();
+        }
+
+        // starts again: the tank, the controller, the chart and the step counter
         private void DoReset()
         {
             _timer.Stop();
@@ -522,7 +533,7 @@ namespace SalternPID
             // we save this step, for the metrics and for the CSV file
             _log.Add(_tank.Level, _setPointBar.Value, _tank.Valve, _tank.NullPosition, _tank.Disturbance);
 
-            // the process makes one step 
+            // the process makes one step
             if (_processCheck.Checked)
                 _tank.Step();
 
