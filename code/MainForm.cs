@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Windows.Forms;
 
 namespace SalternPID
@@ -16,6 +17,10 @@ namespace SalternPID
         private List<Scenario> _scenarios;
         private Scenario _scenario = null;
 
+        // what happens at every step, and the metrics of the finished run
+        private RunLog _log = new RunLog();
+        private RunMetrics _metrics = null;
+
         private TankView _tankView;
         private ChartView _chartView;
         private Timer _timer;
@@ -30,6 +35,7 @@ namespace SalternPID
         private TrackBar _disturbanceBar;
         private ComboBox _scenarioBox;
         private Control[] _scenarioDrivenControls;
+        private Label _resultLabel;
 
         // the controller side
         private CheckBox _controllerCheck;
@@ -119,7 +125,7 @@ namespace SalternPID
 
         private void BuildProcessColumn(FlowLayoutPanel column)
         {
-            AddTitle(column, "Process (the tank)");
+            AddTitle(column, "Process");
 
             // the test situations S1 to S6
             FlowLayoutPanel situationRow = new FlowLayoutPanel();
@@ -146,6 +152,7 @@ namespace SalternPID
             buttons.Controls.Add(MakeButton("Start", StartButton_Click));
             buttons.Controls.Add(MakeButton("Stop", StopButton_Click));
             buttons.Controls.Add(MakeButton("Reset", ResetButton_Click));
+            buttons.Controls.Add(MakeButton("Save CSV", SaveButton_Click));
             column.Controls.Add(buttons);
 
             // with this box we stop only the process, the controller goes on
@@ -158,6 +165,13 @@ namespace SalternPID
             _valveBar = AddTrackBar(column, "Valve u", 0, 100, 50);
             _nullBar = AddTrackBar(column, "Null position u0", 0, 100, 50);
             _disturbanceBar = AddTrackBar(column, "Disturbance d (rain +, evaporation -)", -5, 5, 0);
+
+            // the metrics of the run, shown when a situation is finished
+            _resultLabel = new Label();
+            _resultLabel.Font = new Font("Consolas", 10);
+            _resultLabel.AutoSize = true;
+            _resultLabel.Margin = new Padding(3, 15, 3, 0);
+            column.Controls.Add(_resultLabel);
 
             // when a situation is chosen, it moves these controls, not us
             _scenarioDrivenControls = new Control[] { _setPointBar, _nullBar, _disturbanceBar, _noiseBox };
@@ -327,7 +341,7 @@ namespace SalternPID
             DoReset();
         }
 
-        // starts again: the tank, the controller, the chart and the step counter
+        // the tank, the controller, the chart and the step counter
         private void DoReset()
         {
             _timer.Stop();
@@ -335,6 +349,9 @@ namespace SalternPID
             _controller = MakeController(_controllerBox.SelectedIndex);
             _step = 0;
             _chartView.Clear();
+            _log.Clear();
+            _metrics = null;
+            _resultLabel.Text = "";
             ApplyScenario();
             CopySettingsToTank();
             UpdateScreen();
@@ -371,6 +388,57 @@ namespace SalternPID
         {
             if (bar.Value != value)
                 bar.Value = value;
+        }
+
+        // the run is finished: we compute the metrics and we show them
+        private void ShowResults()
+        {
+            if (_scenario == null) return;
+            if (_log.Count != _scenario.Steps) return;
+
+            _metrics = RunMetrics.Calculate(_log, _scenario.EventStep, GetCancelCount());
+            _resultLabel.Text = _metrics.ToText(_scenario.Name, _controller.Name);
+        }
+
+        private int GetCancelCount()
+        {
+            ExtendedPid ours = _controller as ExtendedPid;
+            if (ours == null) return 0;
+            return ours.CancelCount;
+        }
+
+        // saves the steps in a CSV file, and the metrics in a second CSV file (only for a finished situation)
+        private void SaveButton_Click(object sender, EventArgs e)
+        {
+            if (_log.Count == 0)
+            {
+                MessageBox.Show("There is nothing to save yet. Run something first.");
+                return;
+            }
+
+            string situation = (_scenario == null) ? "free" : _scenario.Name;
+            string controllerName = _controller.Name.Replace(" ", "").Replace("+", "Plus");
+
+            SaveFileDialog dialog = new SaveFileDialog();
+            dialog.Filter = "CSV files (*.csv)|*.csv";
+            dialog.FileName = "run_" + situation + "_" + controllerName + "_seed" + _seedBox.Value + ".csv";
+            if (dialog.ShowDialog() != DialogResult.OK)
+                return;
+
+            _log.SaveCsv(dialog.FileName);
+            string message = "Saved the steps in:" + Environment.NewLine + dialog.FileName;
+
+            if (_metrics != null)
+            {
+                string folder = Path.GetDirectoryName(dialog.FileName);
+                string metricsName = Path.GetFileNameWithoutExtension(dialog.FileName) + "_metrics.csv";
+                string metricsPath = Path.Combine(folder, metricsName);
+
+                _metrics.SaveCsv(metricsPath, situation, _controller.Name, (int)_seedBox.Value);
+                message = message + Environment.NewLine + Environment.NewLine + "Saved the metrics in:" + Environment.NewLine + metricsPath;
+            }
+
+            MessageBox.Show(message);
         }
 
         // makes the controller that is chosen in the list
@@ -428,6 +496,7 @@ namespace SalternPID
             if (_scenario != null && _step >= _scenario.Steps)
             {
                 _timer.Stop();
+                ShowResults();
                 UpdateScreen();
                 return;
             }
@@ -449,6 +518,9 @@ namespace SalternPID
             {
                 _tank.MoveValve(_valveBar.Value);
             }
+
+            // we save this step, for the metrics and for the CSV file
+            _log.Add(_tank.Level, _setPointBar.Value, _tank.Valve, _tank.NullPosition, _tank.Disturbance);
 
             // the process makes one step 
             if (_processCheck.Checked)
