@@ -9,16 +9,19 @@ using System.Windows.Forms;
 
 namespace SalternPID
 {
-    // it runs the experiments E1, E6 and E7 and shows the tables with the results
+    // it runs the experiments E1, E6 and E7 and shows the tables with the results; it also has the checks of the simulator and the tuning of the weights
     public class ExperimentsForm : Form
     {
         private NumericUpDown _runsBox;
         private Button _runButton;
         private Button _saveButton;
+        private Button _checksButton;
+        private Button _tuneButton;
         private ProgressBar _progressBar;
         private Label _statusLabel;
         private ComboBox _tableBox;
         private DataGridView _grid;
+        private TextBox _outputBox;
 
         // the results
         private DataTable _comparisonTable;
@@ -28,8 +31,8 @@ namespace SalternPID
 
         public ExperimentsForm()
         {
-            Text = "Experiments E1, E6 and E7";
-            ClientSize = new Size(1200, 680);
+            Text = "Experiments E1, E6 and E7, checks and tuning";
+            ClientSize = new Size(1200, 720);
             StartPosition = FormStartPosition.CenterParent;
             Font = new Font("Segoe UI", 10);
             BackColor = Color.White;
@@ -39,7 +42,7 @@ namespace SalternPID
 
         private void BuildInterface()
         {
-            // the table is added first, the panel with the buttons on top of it after
+            // the table is added first, then the text box at the bottom, then the panel with the buttons on top
             _grid = new DataGridView();
             _grid.Dock = DockStyle.Fill;
             _grid.ReadOnly = true;
@@ -49,9 +52,19 @@ namespace SalternPID
             _grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
             Controls.Add(_grid);
 
+            // here we write the results of the checks and of the tuning
+            _outputBox = new TextBox();
+            _outputBox.Dock = DockStyle.Bottom;
+            _outputBox.Height = 190;
+            _outputBox.Multiline = true;
+            _outputBox.ReadOnly = true;
+            _outputBox.ScrollBars = ScrollBars.Vertical;
+            _outputBox.Font = new Font("Consolas", 10);
+            Controls.Add(_outputBox);
+
             FlowLayoutPanel top = new FlowLayoutPanel();
             top.Dock = DockStyle.Top;
-            top.Height = 140;
+            top.Height = 190;
             top.Padding = new Padding(10);
             Controls.Add(top);
 
@@ -92,6 +105,20 @@ namespace SalternPID
             _saveButton.Click += SaveButton_Click;
             top.Controls.Add(_saveButton);
 
+            _checksButton = new Button();
+            _checksButton.Text = "Simulator checks";
+            _checksButton.Width = 160;
+            _checksButton.Height = 34;
+            _checksButton.Click += ChecksButton_Click;
+            top.Controls.Add(_checksButton);
+
+            _tuneButton = new Button();
+            _tuneButton.Text = "Tune the weights";
+            _tuneButton.Width = 160;
+            _tuneButton.Height = 34;
+            _tuneButton.Click += TuneButton_Click;
+            top.Controls.Add(_tuneButton);
+
             _progressBar = new ProgressBar();
             _progressBar.Width = 250;
             _progressBar.Height = 24;
@@ -121,12 +148,21 @@ namespace SalternPID
             _tableBox.SelectedIndexChanged += TableBox_Changed;
             top.Controls.Add(_tableBox);
         }
+
+        // while something runs, we cannot start another thing
+        private void SetBusy(bool busy)
+        {
+            _runButton.Enabled = !busy;
+            _checksButton.Enabled = !busy;
+            _tuneButton.Enabled = !busy;
+            _saveButton.Enabled = !busy && _comparisonTable != null;
+        }
+
         private async void RunButton_Click(object sender, EventArgs e)
         {
             int runs = (int)_runsBox.Value;
 
-            _runButton.Enabled = false;
-            _saveButton.Enabled = false;
+            SetBusy(true);
             _progressBar.Value = 0;
             _statusLabel.Text = "Running...";
 
@@ -139,7 +175,6 @@ namespace SalternPID
                 await Task.Run(() => RunAll(runs, progress));
 
                 _statusLabel.Text = "Done in " + watch.Elapsed.TotalSeconds.ToString("F1") + " seconds.";
-                _saveButton.Enabled = true;
                 ShowTable();
             }
             catch (Exception ex)
@@ -147,7 +182,7 @@ namespace SalternPID
                 _statusLabel.Text = "Error: " + ex.Message;
             }
 
-            _runButton.Enabled = true;
+            SetBusy(false);
         }
 
         // this runs on another thread, so the window does not freeze
@@ -178,6 +213,47 @@ namespace SalternPID
             // E6 and E7
             _ablationTable = Experiments.Run(all, ablation, runs, oneRunDone).Table;
             _weightsTable = Experiments.Run(forWeights, weights, runs, oneRunDone).Table;
+        }
+
+        private void ChecksButton_Click(object sender, EventArgs e)
+        {
+            List<string> lines = SimulatorChecks.RunAll();
+            _outputBox.Text = string.Join(Environment.NewLine, lines);
+            _statusLabel.Text = "The checks are done.";
+        }
+
+        private async void TuneButton_Click(object sender, EventArgs e)
+        {
+            SetBusy(true);
+            _progressBar.Value = 0;
+            _statusLabel.Text = "Tuning the weights (about 10 to 60 seconds)...";
+            _outputBox.Text = "";
+
+            Progress<int> progress = new Progress<int>(percent => _progressBar.Value = percent);
+            Stopwatch watch = Stopwatch.StartNew();
+
+            try
+            {
+                int done = 0;
+                Action oneEvaluationDone = () =>
+                {
+                    done++;
+                    int percent = done * 100 / Tuner.TotalEvaluations;
+                    if (percent > 100) percent = 100;
+                    ((IProgress<int>)progress).Report(percent);
+                };
+
+                string text = await Task.Run(() => Tuner.TuneAll(oneEvaluationDone));
+
+                _outputBox.Text = text;
+                _statusLabel.Text = "Tuning done in " + watch.Elapsed.TotalSeconds.ToString("F1") + " seconds.";
+            }
+            catch (Exception ex)
+            {
+                _statusLabel.Text = "Error: " + ex.Message;
+            }
+
+            SetBusy(false);
         }
 
         private void TableBox_Changed(object sender, EventArgs e)
